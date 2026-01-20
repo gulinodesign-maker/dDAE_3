@@ -3,7 +3,46 @@
 /**
  * Build: incrementa questa stringa alla prossima modifica (es. 1.001)
  */
-const BUILD_VERSION = "dDAE_2.049";
+const BUILD_VERSION = "dDAE_2.074";
+
+// Ruoli: "user" (default) | "operatore"
+function isOperatoreSession(sess){
+  try{ return String(sess?.ruolo || "").trim().toLowerCase() === "operatore"; }
+  catch(_){ return false; }
+}
+
+function applyRoleMode(){
+  const isOp = !!(state && state.session && isOperatoreSession(state.session));
+  try{ document.body.dataset.role = isOp ? "operatore" : "user"; }catch(_){ }
+
+  // HOME: mostra solo Pulizie / Lavanderia / Calendario per operatori
+  if (isOp){
+    const hideIds = [
+      "goOspite",
+      "openLauncher",
+      "goTassaSoggiorno",
+      "goStatistiche",
+      "homeSettingsTop",
+      "prodTopLeds",
+      // icone/shortcuts ospiti duplicati (se presenti)
+      "goOspiti",
+    ];
+    hideIds.forEach((id)=>{
+      const el = document.getElementById(id);
+      if (!el) return;
+      try{ el.hidden = true; }catch(_){ }
+      try{ el.style.display = "none"; }catch(_){ }
+    });
+
+    // Header tools: nascondi tools non consentiti
+    try{ const ospitiTopTools = document.getElementById("ospitiTopTools"); if (ospitiTopTools) ospitiTopTools.hidden = true; }catch(_){ }
+    try{ const speseTopTools = document.getElementById("speseTopTools"); if (speseTopTools) speseTopTools.hidden = true; }catch(_){ }
+    try{ const statGenTopTools = document.getElementById("statGenTopTools"); if (statGenTopTools) statGenTopTools.hidden = true; }catch(_){ }
+    try{ const statMensiliTopTools = document.getElementById("statMensiliTopTools"); if (statMensiliTopTools) statMensiliTopTools.hidden = true; }catch(_){ }
+    try{ const statSpeseTopTools = document.getElementById("statSpeseTopTools"); if (statSpeseTopTools) statSpeseTopTools.hidden = true; }catch(_){ }
+    try{ const statPrenTopTools = document.getElementById("statPrenTopTools"); if (statPrenTopTools) statPrenTopTools.hidden = true; }catch(_){ }
+  }
+}
 
 
 function __parseBuildVersion(v){
@@ -497,6 +536,15 @@ guestMarriage: false,
   laundry: { list: [], current: null },
   // Impostazioni (foglio "impostazioni")
   settings: { loaded: false, byKey: {}, rows: [], loadedAt: 0 },
+
+  // Colazione (lista spesa permanente)
+  colazione: { loaded: false, loadedAt: 0, items: [] },
+
+  // Prodotti pulizia (lista spesa permanente)
+  prodotti_pulizia: { loaded: false, loadedAt: 0, items: [] },
+
+  // UI prodotti
+  prodottiUI: { list: "colazione", sort: "frequent" },
 
   // Auth/session + anno esercizio
   session: null,
@@ -1023,6 +1071,22 @@ function categoriaLabel(cat){
   })[cat] || cat;
 }
 
+function __apiProfile(action, method, body){
+  const a = String(action || "").trim().toLowerCase();
+  const m = String(method || "").trim().toUpperCase();
+  // Default: breve per evitare loader infinito su iOS
+  let timeoutMs = 15000;
+  let retries = 0;
+
+  // Lista spesa (colazione + prodotti pulizia): più lenta su rete iOS / Apps Script
+  if (a === "colazione" || a === "prodotti_pulizia"){
+    timeoutMs = (m === "GET") ? 45000 : 60000;
+    retries = 2;
+  }
+
+  return { timeoutMs, retries };
+}
+
 async function api(action, { method="GET", params={}, body=null, showLoader=true } = {}){
   if (showLoader) beginRequest();
   try {
@@ -1058,68 +1122,90 @@ async function api(action, { method="GET", params={}, body=null, showLoader=true
     url.searchParams.set("_method", method);
     realMethod = "POST";
   }
+  const { timeoutMs, retries } = __apiProfile(action, realMethod, body);
 
-  // Timeout concreto: evita loader infinito su iOS quando la rete “si pianta”
-const controller = new AbortController();
-const t = setTimeout(() => controller.abort(), 15000);
+  const baseFetchOpts = {
+    method: realMethod,
+    cache: "no-store",
+  };
 
-const fetchOpts = {
-  method: realMethod,
-  signal: controller.signal,
-  cache: "no-store",
-};
+  // Headers/body solo quando serve (riduce rischi di preflight su Safari iOS)
+  if (realMethod !== "GET") {
+    baseFetchOpts.headers = { "Content-Type": "text/plain;charset=utf-8" };
+    let payload = body;
+    // Inietta user_id/anno su POST/PUT (se mancano)
+    try{
+      if (state && state.session && state.session.user_id && action !== "utenti"){
+        const uid = String(state.session.user_id);
+        const yr = String(state.exerciseYear || "");
+        const addCtx = (o)=>{
+          if (!o || typeof o !== "object") return o;
+          if (o.user_id === undefined || o.user_id === null || String(o.user_id).trim() === "") o.user_id = uid;
+          if (o.anno === undefined || o.anno === null || String(o.anno).trim() === "") o.anno = yr;
+          return o;
+        };
 
-// Headers/body solo quando serve (riduce rischi di preflight su Safari iOS)
-if (realMethod !== "GET") {
-  fetchOpts.headers = { "Content-Type": "text/plain;charset=utf-8" };
-  let payload = body;
-  // Inietta user_id/anno su POST/PUT (se mancano)
-  try{
-    if (state && state.session && state.session.user_id && action !== "utenti"){
-      const uid = String(state.session.user_id);
-      const yr = String(state.exerciseYear || "");
-      const addCtx = (o)=>{
-        if (!o || typeof o !== "object") return o;
-        if (o.user_id === undefined || o.user_id === null || String(o.user_id).trim() === "") o.user_id = uid;
-        if (o.anno === undefined || o.anno === null || String(o.anno).trim() === "") o.anno = yr;
-        return o;
-      };
+        const deep = (x, depth = 0)=>{
+          if (!x || typeof x !== "object") return x;
+          if (Array.isArray(x)) return x.map(v => deep(v, depth));
+          addCtx(x);
+          if (depth >= 1) return x;
+          // pattern comuni: bulk payloads
+          ["rows","items","records","data","list"].forEach((k)=>{
+            const v = x[k];
+            if (Array.isArray(v)) x[k] = v.map(r => deep(r, depth + 1));
+          });
+          return x;
+        };
 
-      const deep = (x, depth = 0)=>{
-        if (!x || typeof x !== "object") return x;
-        if (Array.isArray(x)) return x.map(v => deep(v, depth));
-        addCtx(x);
-        if (depth >= 1) return x;
-        // pattern comuni: bulk payloads
-        ["rows","items","records","data","list"].forEach((k)=>{
-          const v = x[k];
-          if (Array.isArray(v)) x[k] = v.map(r => deep(r, depth + 1));
-        });
-        return x;
-      };
-
-      payload = deep(payload, 0);
-    }
-  }catch(_){ }
-  fetchOpts.body = payload ? JSON.stringify(payload) : "{}";
-}
-
-let res;
-try {
-  try {
-  res = await fetch(url.toString(), fetchOpts);
-} catch (err) {
-  const msg = String(err && err.message || err || "");
-  if (msg.toLowerCase().includes("failed to fetch")) {
-    throw new Error("Failed to fetch (API). Verifica: 1) Web App Apps Script distribuita come 'Chiunque', 2) URL /exec corretto, 3) rete iPhone ok. Se hai appena aggiornato lo script, ridistribuisci una nuova versione.");
+        payload = deep(payload, 0);
+      }
+    }catch(_){ }
+    baseFetchOpts.body = payload ? JSON.stringify(payload) : "{}";
   }
-  throw err;
-}
-} finally {
-  clearTimeout(t);
-}
 
-let json;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  let res;
+  for (let attempt = 0; attempt <= retries; attempt++){
+    // Timeout concreto: evita loader infinito su iOS quando la rete “si pianta”
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    try{
+      res = await fetch(url.toString(), Object.assign({}, baseFetchOpts, { signal: controller.signal }));
+      break;
+    }catch(err){
+      const msg = String((err && err.message) || err || "");
+      const low = msg.toLowerCase();
+      const name = String((err && err.name) || "").toLowerCase();
+
+      const isAbort = name === "aborterror" || low.includes("fetch is aborted") || low.includes("aborted");
+      const isNet = low.includes("failed to fetch") || low.includes("networkerror") || low.includes("load failed");
+      const retryable = isAbort || isNet;
+
+      if (attempt < retries && retryable){
+        const backoff = Math.min(8000, 700 * (2 ** attempt));
+        const jitter = Math.floor(Math.random() * 200);
+        await sleep(backoff + jitter);
+        continue;
+      }
+
+      if (isAbort){
+        throw new Error("Operazione annullata: connessione lenta o instabile (timeout). Riprova.");
+      }
+
+      if (isNet){
+        throw new Error("Connessione assente o instabile. Verifica la rete e riprova. Se il problema persiste: 1) Web App Apps Script distribuita come 'Chiunque', 2) URL /exec corretto, 3) hai ridistribuito una nuova versione dello script dopo modifiche.");
+      }
+
+      throw err;
+    }finally{
+      clearTimeout(t);
+    }
+  }
+
+  let json;
 try {
   json = await res.json();
 } catch (_) {
@@ -1228,6 +1314,27 @@ ids.forEach((id, idx) => {
   el.classList.remove("is-placeholder");
 });
 
+
+
+// Se sessione OPERATORE: in Pulizie mostra solo il nome dell'operatore loggato
+try{
+  if (state && state.session && isOperatoreSession(state.session)){
+    const rawU = String(state.session.username || state.session.user || state.session.nome || state.session.name || state.session.email || "").trim();
+    const normU = rawU.toLowerCase();
+    if (normU){
+      const names2 = names;
+      const active = (names2||[]).find(n => String(n||"").trim().toLowerCase() === normU) || rawU;
+      (names2||[]).forEach((nm, idx)=>{
+        const nm2 = String(nm||"").trim();
+        if (!nm2) return;
+        const rowEl = document.getElementById(ids[idx])?.closest?.('.clean-op-row');
+        if (!rowEl) return;
+        const show = nm2.toLowerCase() === String(active||"").trim().toLowerCase();
+        rowEl.style.display = show ? '' : 'none';
+      });
+    }
+  }
+}catch(_){}
 refreshFloatingLabels();
     } catch(_) {}
 
@@ -1331,6 +1438,7 @@ function setupImpostazioni() {
 
       try{ clearSession(); }catch(_){ }
       try{ state.session = null; }catch(_){ }
+      try{ applyRoleMode(); }catch(_){ }
       try{ invalidateApiCache(); }catch(_){ }
       try{ __lsClearAll(); }catch(_){ }
       toast("Account eliminato");
@@ -1342,6 +1450,7 @@ function setupImpostazioni() {
   if (logout) logout.addEventListener("click", () => {
     try{ clearSession(); }catch(_){ }
     try{ state.session = null; }catch(_){ }
+    try{ applyRoleMode(); }catch(_){ }
     try{ invalidateApiCache(); }catch(_){ }
     try{ showPage("auth"); }catch(_){ }
   });
@@ -1362,6 +1471,165 @@ function setupImpostazioni() {
       invalidateApiCache();
     });
   }
+
+  // =========================
+  // OPERATORE: popup crea / modifica
+  // =========================
+  const opBtn = document.getElementById("settingsCreateOperatorBtn");
+  const opModal = document.getElementById("operatorModal");
+  const opModalClose = document.getElementById("operatorModalClose");
+  const opMenu = document.getElementById("operatorModalMenu");
+  const opForm = document.getElementById("operatorModalForm");
+  const opCreate = document.getElementById("operatorCreateBtn");
+  const opEdit = document.getElementById("operatorEditBtn");
+  const opDelete = document.getElementById("operatorDeleteBtn");
+  const opBack = document.getElementById("opFormBack");
+  const opConfirm = document.getElementById("opFormConfirm");
+  const opUser = document.getElementById("opFormUsername");
+  const opPass = document.getElementById("opFormPassword");
+  const opOwnerPass = document.getElementById("opFormOwnerPassword");
+  const opPassLabel = document.getElementById("opFormPasswordLabel");
+  const opMsg = document.getElementById("operatorModalMsg");
+  const opPassWrap = opPass ? (opPass.closest?.(".field") || opPass.parentElement) : null;
+
+  let __opMode = ""; // "create" | "edit" | "delete"
+
+  function __opSetMsg(msg, kind){
+    try{
+      if (!opMsg) return;
+      opMsg.textContent = String(msg || "");
+      opMsg.classList.remove("is-ok","is-err");
+      if (kind === "ok") opMsg.classList.add("is-ok");
+      if (kind === "err") opMsg.classList.add("is-err");
+      opMsg.hidden = !opMsg.textContent;
+    }catch(_){ }
+  }
+
+  function __opShowMenu(){
+    __opMode = "";
+    if (opMenu) opMenu.hidden = false;
+    if (opForm) opForm.hidden = true;
+    if (opUser) opUser.value = "";
+    if (opPass) opPass.value = "";
+    if (opOwnerPass) opOwnerPass.value = "";
+    if (opPassWrap) opPassWrap.hidden = false;
+    __opSetMsg("", null);
+    try{ refreshFloatingLabels(); }catch(_){ }
+  }
+
+  function __opShowForm(mode){
+    __opMode = mode;
+    if (opMenu) opMenu.hidden = true;
+    if (opForm) opForm.hidden = false;
+    if (opUser) opUser.value = "";
+    if (opPass) opPass.value = "";
+    if (opOwnerPass) opOwnerPass.value = "";
+    if (opPassLabel) opPassLabel.textContent = (mode === "edit") ? "Nuova password" : (mode === "delete" ? "Password operatore" : "Password operatore");
+    if (opConfirm) opConfirm.textContent = (mode === "edit") ? "Salva" : (mode === "delete" ? "Elimina" : "Crea");
+    if (opPassWrap) opPassWrap.hidden = (mode === "delete");
+    __opSetMsg("", null);
+    try{ refreshFloatingLabels(); }catch(_){ }
+    try{ setTimeout(()=>{ try{ opUser && opUser.focus(); }catch(_){ } }, 30); }catch(_){ }
+  }
+
+  function __opOpen(){
+    const s = state.session || loadSession();
+    if (!s || !s.username){ toast("Nessun account"); return; }
+    if (isOperatoreSession(s)){ toast("Non disponibile per operatori"); return; }
+    if (!opModal) return;
+    __opShowMenu();
+    try{ opModal.hidden = false; opModal.setAttribute("aria-hidden","false"); }catch(_){ }
+  }
+
+  function __opClose(){
+    if (!opModal) return;
+    try{ opModal.hidden = true; opModal.setAttribute("aria-hidden","true"); }catch(_){ }
+  }
+
+  async function __opSubmit(){
+    try{
+      const s = state.session || loadSession();
+      if (!s || !s.username){ __opSetMsg("Nessun account", "err"); return; }
+      if (isOperatoreSession(s)){ __opSetMsg("Non disponibile per operatori", "err"); return; }
+
+      const ownerUsername = String(s.username || "").trim();
+      const operatorUsername = String(opUser?.value || "").trim();
+      const operatorPassword = String(opPass?.value || "");
+      const ownerPassword = String(opOwnerPass?.value || "");
+
+      __opSetMsg("", null);
+      if (!operatorUsername) { __opSetMsg("Username operatore mancante", "err"); return; }
+      if (__opMode !== "delete" && !operatorPassword) { __opSetMsg((__opMode === "edit") ? "Nuova password mancante" : "Password operatore mancante", "err"); return; }
+      if (!ownerPassword) { __opSetMsg("Password owner mancante", "err"); return; }
+
+      if (__opMode === "create"){
+        await api("utenti", {
+          method:"POST",
+          body:{
+            op:"create_operator",
+            username: ownerUsername,
+            password: ownerPassword,
+            operator_username: operatorUsername,
+            operator_password: operatorPassword,
+          },
+          showLoader:true,
+        });
+        __opSetMsg("Operatore creato", "ok");
+        try{ if (opPass) opPass.value = ""; }catch(_){ }
+        try{ if (opOwnerPass) opOwnerPass.value = ""; }catch(_){ }
+        try{ refreshFloatingLabels(); }catch(_){ }
+        return;
+      }
+
+      if (__opMode === "edit"){
+        await api("utenti", {
+          method:"POST",
+          body:{
+            op:"update_operator",
+            username: ownerUsername,
+            password: ownerPassword,
+            operator_username: operatorUsername,
+            newPassword: operatorPassword,
+          },
+          showLoader:true,
+        });
+        __opSetMsg("Operatore aggiornato", "ok");
+        try{ if (opPass) opPass.value = ""; }catch(_){ }
+        try{ if (opOwnerPass) opOwnerPass.value = ""; }catch(_){ }
+        try{ refreshFloatingLabels(); }catch(_){ }
+        return;
+      }
+
+      if (__opMode === "delete"){
+        const ok = confirm(`Eliminare l'operatore "${operatorUsername}"?`);
+        if (!ok) return;
+        await api("utenti", {
+          method:"POST",
+          body:{
+            op:"delete_operator",
+            username: ownerUsername,
+            password: ownerPassword,
+            operator_username: operatorUsername,
+          },
+          showLoader:true,
+        });
+        __opSetMsg("Operatore eliminato", "ok");
+        try{ if (opOwnerPass) opOwnerPass.value = ""; }catch(_){ }
+        try{ refreshFloatingLabels(); }catch(_){ }
+        return;
+      }
+
+      __opSetMsg("Operazione non valida", "err");
+    }catch(e){ __opSetMsg(e.message || "Errore", "err"); }
+  }
+
+  if (opBtn) bindFastTap(opBtn, __opOpen);
+  if (opModalClose) bindFastTap(opModalClose, __opClose);
+  if (opCreate) bindFastTap(opCreate, ()=>__opShowForm("create"));
+  if (opEdit) bindFastTap(opEdit, ()=>__opShowForm("edit"));
+  if (opDelete) bindFastTap(opDelete, ()=>__opShowForm("delete"));
+  if (opBack) bindFastTap(opBack, __opShowMenu);
+  if (opConfirm) bindFastTap(opConfirm, __opSubmit);
 }
 
 
@@ -1454,7 +1722,8 @@ function setupAuth(){
         saveSession(state.session);
         state.exerciseYear = loadExerciseYear();
         updateYearPill();
-        showPage("home");
+        try{ applyRoleMode(); }catch(_){ }
+        showPage(isOperatoreSession(state.session) ? "pulizie" : "home");
       }
     } catch(e){ setHint(e.message || "Errore"); }
   });
@@ -1481,6 +1750,7 @@ function setupAuth(){
       if (data && data.user){
         state.session = data.user;
         saveSession(state.session);
+        try{ applyRoleMode(); }catch(_){ }
       }
     } catch(e){ setHint(e.message || "Errore"); }
   });
@@ -1503,8 +1773,9 @@ function setupAuth(){
       try{ invalidateApiCache(); }catch(_){ }
       state.exerciseYear = loadExerciseYear();
       updateYearPill();
+      try{ applyRoleMode(); }catch(_){ }
       setHint("");
-      showPage("home");
+      showPage(isOperatoreSession(state.session) ? "pulizie" : "home");
     } catch(e){ setHint(e.message || "Errore"); }
   });
 }
@@ -1744,6 +2015,9 @@ function setSpeseView(view, { render=false } = {}){
 
 /* NAV pages (5 pagine interne: home + 4 funzioni) */
 function showPage(page){
+  // Back-compat: vecchia pagina "colazione" ora è "prodotti"
+  if (page === "colazione") page = "prodotti";
+
   // Redirect: grafico/riepilogo ora sono dentro "Spese" (videata unica)
   if (page === "riepilogo" || page === "grafico"){
     page = "spese";
@@ -1757,6 +2031,14 @@ function showPage(page){
       page = "auth";
     }
   }catch(_){ page = "auth"; }
+
+  // Gate ruolo: operatore vede solo Pulizie / Lavanderia / Calendario
+  try{
+    if (state.session && isOperatoreSession(state.session)){
+      const allowed = new Set(["home","pulizie","lavanderia","calendario","orepulizia","auth","prodotti","colazione"]);
+      if (!allowed.has(page)) page = "pulizie";
+    }
+  }catch(_){ }
 
 
   // Token navigazione: impedisce render/loader fuori contesto quando cambi pagina durante fetch
@@ -1797,11 +2079,34 @@ state.page = page;
   }
 
 
+
+
+  // Topbar: in HOME il tasto "Home" non serve → mostra Impostazioni
+  try{
+    const hb2 = document.getElementById("hamburgerBtn");
+    const hs2 = document.getElementById("homeSettingsTop");
+    const leds2 = document.getElementById("prodTopLeds");
+    const isHome = (page === "home");
+    const isOp = !!(state.session && isOperatoreSession(state.session));
+    if (hb2) hb2.hidden = isHome;
+    if (hs2) hs2.hidden = (!isHome) || isOp;
+    if (leds2) leds2.hidden = (page !== "home") || isOp;
+  }catch(_){ }
+
   // Top back button (Ore pulizia + Calendario)
   const backBtnTop = $("#backBtnTop");
   if (backBtnTop){
     backBtnTop.hidden = !(page === "orepulizia" || page === "calendario");
   }
+
+  // Logout top (solo HOME operatore)
+  try{
+    const opLogout = document.getElementById("opLogoutTop");
+    if (opLogout){
+      const isOp = !!(state.session && isOperatoreSession(state.session));
+      opLogout.hidden = !(isOp && page === "home");
+    }
+  }catch(_){ }
 
 
   // Top tools (solo Pulizie) — lavanderia + ore lavoro accanto al tasto Home
@@ -1824,7 +2129,15 @@ state.page = page;
     speseTopTools.hidden = (page !== "spese");
   }
 
-  // Top tools (Statistiche → Conteggio generale)
+  
+
+  // Top tools (Prodotti) — inserisci/azzera/salva accanto al tasto Home
+  const prodottiTopTools = $("#prodottiTopTools");
+  if (prodottiTopTools){
+    prodottiTopTools.hidden = (page !== "prodotti");
+  }
+
+// Top tools (Statistiche → Conteggio generale)
   const statGenTopTools = $("#statGenTopTools");
   if (statGenTopTools){
     statGenTopTools.hidden = (page !== "statgen");
@@ -1848,6 +2161,13 @@ state.page = page;
   }
 
 // render on demand
+  if (page === "prodotti") {
+    const _nav = navId;
+    loadProdotti({ force:false, showLoader:true })
+      .then(()=>{ if (state.navId !== _nav || state.page !== "prodotti") return; renderProdotti(); })
+      .catch(e=>toast(e.message));
+  }
+
   if (page === "spese") {
     const _nav = navId;
     ensurePeriodData({ showLoader:true })
@@ -1944,11 +2264,24 @@ function setupHeader(){
   const hb = $("#hamburgerBtn");
   if (hb) hb.addEventListener("click", () => { hideLauncher(); showPage("home"); });
 
+  const opLogout = document.getElementById("opLogoutTop");
+  if (opLogout) bindFastTap(opLogout, () => {
+    try{ clearSession(); }catch(_){ }
+    try{ state.session = null; }catch(_){ }
+    try{ applyRoleMode(); }catch(_){ }
+    try{ invalidateApiCache(); }catch(_){ }
+    try{ showPage("auth"); }catch(_){ }
+  });
+
   // Back (ore pulizia + calendario)
   const bb = $("#backBtnTop");
   if (bb) bb.addEventListener("click", () => {
     if (state.page === "orepulizia") { showPage("pulizie"); return; }
-    if (state.page === "calendario") { showPage("ospiti"); return; }
+    if (state.page === "calendario") {
+      if (state.session && isOperatoreSession(state.session)) { showPage("pulizie"); return; }
+      showPage("ospiti");
+      return;
+    }
     showPage("home");
   });
 }
@@ -2017,10 +2350,17 @@ if (goCalendarioTopOspiti){
 
 
 
-  // HOME: icona Impostazioni
-  const goImp = $("#goImpostazioni");
-  if (goImp){
-    bindFastTap(goImp, () => showPage("impostazioni"));
+  // HOME: icona Colazione
+  const goCol = $("#goProdotti");
+  if (goCol){
+    bindFastTap(goCol, () => { hideLauncher(); showPage("prodotti"); });
+  }
+
+
+  // HOME: Impostazioni (top)
+  const hsTop = document.getElementById("homeSettingsTop");
+  if (hsTop){
+    bindFastTap(hsTop, () => { hideLauncher(); showPage("impostazioni"); });
   }
 
   // HOME: icona Calendario (tap-safe su iOS PWA)
@@ -4996,6 +5336,892 @@ function renderGuestCards(){
 
 
 
+
+
+// =========================
+// COLAZIONE (lista spesa)
+// =========================
+
+function __normBool01(v){
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "y") return 1;
+  return 0;
+}
+
+function __colazioneAny(){
+  try{ return Array.isArray(state.colazione.items) && state.colazione.items.filter(i=>!__normBool01(i.isDeleted)).length > 0; }catch(_){ return false; }
+}
+
+function updateProdottiHomeBlink(){
+  const btn = document.getElementById("goProdotti");
+  if (!btn) return;
+  const any = (
+    Array.isArray(state.colazione?.items) && state.colazione.items.some(i=>!__normBool01(i.isDeleted))
+  ) || (
+    Array.isArray(state.prodotti_pulizia?.items) && state.prodotti_pulizia.items.some(i=>!__normBool01(i.isDeleted))
+  );
+  btn.classList.toggle("colazione-attn", !!any);
+
+  // Topbar LED: acceso quando esiste almeno un prodotto "salvato" (pallino rosso)
+  // nella relativa lista.
+  try{
+    const ledC = document.getElementById("prodLedColazione");
+    const ledP = document.getElementById("prodLedPulizia");
+    if (ledC && ledP){
+      const anySavedIn = (arr) => {
+        try{
+          if (!Array.isArray(arr)) return false;
+          return arr.some((i)=>{
+            if (__normBool01(i?.isDeleted)) return false;
+            const q = parseInt(String(i?.qty ?? 0), 10);
+            const qty = isNaN(q) ? 0 : Math.max(0, q);
+            return qty > 0 && __normBool01(i?.saved) === 1;
+          });
+        }catch(_){ return false; }
+      };
+      const hasC = anySavedIn(state.colazione?.items);
+      const hasP = anySavedIn(state.prodotti_pulizia?.items);
+      ledC.classList.toggle("is-on", !!hasC);
+      ledP.classList.toggle("is-on", !!hasP);
+    }
+  }catch(_){ }
+}
+
+function __freqKey_(action, id){
+  const uid = String(state?.session?.user_id || "").trim();
+  const yr = String(state?.exerciseYear || "").trim();
+  return `freq:${uid}:${yr}:${String(action||"")}:${String(id||"")}`;
+}
+
+function getFreq_(action, id){
+  try{
+    const k = __freqKey_(action, id);
+    state._freqCache = state._freqCache || {};
+    if (k in state._freqCache) return state._freqCache[k];
+    const v = parseInt(String(localStorage.getItem(k) || "0"), 10);
+    const n = isNaN(v) ? 0 : Math.max(0, v);
+    state._freqCache[k] = n;
+    return n;
+  }catch(_){ return 0; }
+}
+
+function incFreq_(action, id){
+  try{
+    const k = __freqKey_(action, id);
+    const n = getFreq_(action, id) + 1;
+    localStorage.setItem(k, String(n));
+    state._freqCache = state._freqCache || {};
+    state._freqCache[k] = n;
+  }catch(_){ }
+}
+
+async function loadColazione({ force=false, showLoader=true } = {}){
+  const s = state.colazione;
+  const now = Date.now();
+  const ttl = 20000;
+  if (!force && s.loaded && (now - (s.loadedAt||0) < ttl)) {
+    updateProdottiHomeBlink();
+    return s.items || [];
+  }
+  const res = await api("colazione", { method:"GET", params:{}, showLoader });
+  const rows = Array.isArray(res) ? res : (res && Array.isArray(res.rows) ? res.rows : (res && Array.isArray(res.data) ? res.data : []));
+  s.items = (rows || []).filter(r => !__normBool01(r.isDeleted));
+  s.loaded = true;
+  s.loadedAt = now;
+  updateProdottiHomeBlink();
+  return s.items;
+}
+
+function renderColazione(){
+  const wrap = document.getElementById("colazioneList");
+  if (!wrap) return;
+  const items = (state.colazione.items || []).filter(r => !__normBool01(r.isDeleted));
+
+  wrap.innerHTML = "";
+  const frag = document.createDocumentFragment();
+
+  items.forEach((it) => {
+    const row = document.createElement("div");
+    row.className = "colazione-item";
+    row.dataset.id = String(it.id || "");
+
+    const qtyBtn = document.createElement("button");
+    qtyBtn.type = "button";
+    qtyBtn.className = "colazione-dot colazione-qtydot";
+    const draftQty = __prodDraftGetQty_(it.id);
+    const hasDraft = (draftQty !== null && draftQty !== undefined);
+    const qty = hasDraft ? parseInt(String(draftQty ?? 0), 10) : parseInt(String(it.qty ?? 0), 10);
+    const q = (isNaN(qty) ? 0 : Math.max(0, qty));
+    qtyBtn.textContent = q > 0 ? String(q) : "";
+
+    const saved = hasDraft ? 0 : __normBool01(it.saved);
+    qtyBtn.classList.toggle("is-saved", saved && q > 0);
+
+    const text = document.createElement("div");
+    text.className = "colazione-text";
+    text.textContent = String(it.prodotto || "").trim();
+
+    const checkBtn = document.createElement("button");
+    checkBtn.type = "button";
+    checkBtn.className = "colazione-dot colazione-checkdot";
+    checkBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></svg>';
+    checkBtn.classList.toggle("is-checked", __normBool01(it.checked) === 1);
+
+    row.appendChild(qtyBtn);
+    row.appendChild(text);
+    row.appendChild(checkBtn);
+
+    frag.appendChild(row);
+  });
+
+  wrap.appendChild(frag);
+}
+
+
+// =========================
+// PRODOTTI (colazione + prodotti_pulizia)
+// =========================
+
+function __prodListKey_(){
+  return (state.prodottiUI && state.prodottiUI.list === "pulizia") ? "pulizia" : "colazione";
+}
+
+function __prodAction_(){
+  return __prodListKey_() === "pulizia" ? "prodotti_pulizia" : "colazione";
+}
+
+function __prodStateBucket_(){
+  return __prodListKey_() === "pulizia" ? state.prodotti_pulizia : state.colazione;
+}
+
+// Draft qty (non persistito finche' non premi Salva)
+function __prodDraftEnsure_(){
+  state._prodDraft = state._prodDraft || { colazione:{}, pulizia:{} };
+  state._prodDraftDirty = state._prodDraftDirty || { colazione:{}, pulizia:{} };
+  const key = __prodListKey_();
+  state._prodDraft[key] = state._prodDraft[key] || {};
+  state._prodDraftDirty[key] = state._prodDraftDirty[key] || {};
+  return key;
+}
+
+function __prodDraftBucket_(){
+  const key = __prodDraftEnsure_();
+  return state._prodDraft[key];
+}
+
+function __prodDraftDirtyBucket_(){
+  const key = __prodDraftEnsure_();
+  return state._prodDraftDirty[key];
+}
+
+function __prodDraftGetQty_(id){
+  try{
+    const sid = String(id||"");
+    const b = __prodDraftBucket_();
+    if (b && Object.prototype.hasOwnProperty.call(b, sid)) return b[sid];
+  }catch(_){ }
+  return null;
+}
+
+function __prodDraftSetQty_(id, qty){
+  try{
+    const sid = String(id||"");
+    const n = parseInt(String(qty ?? 0), 10);
+    const q = isNaN(n) ? 0 : Math.max(0, n);
+    const b = __prodDraftBucket_();
+    const d = __prodDraftDirtyBucket_();
+    if (b) b[sid] = q;
+    if (d) d[sid] = 1;
+    return q;
+  }catch(_){ }
+  return 0;
+}
+
+function __prodDraftClear_(){
+  try{
+    const key = __prodListKey_();
+    state._prodDraft = state._prodDraft || { colazione:{}, pulizia:{} };
+    state._prodDraftDirty = state._prodDraftDirty || { colazione:{}, pulizia:{} };
+    state._prodDraft[key] = {};
+    state._prodDraftDirty[key] = {};
+  }catch(_){ }
+}
+
+function __prodNameKey_(it){
+  return String(it?.prodotto ?? "").trim().toUpperCase();
+}
+
+async function loadProdotti({ force=false, showLoader=true } = {}){
+  const key = __prodListKey_();
+  if (key === "pulizia") return loadProdottiList_("prodotti_pulizia", state.prodotti_pulizia, { force, showLoader });
+  return loadProdottiList_("colazione", state.colazione, { force, showLoader });
+}
+
+async function loadProdottiList_(action, bucket, { force=false, showLoader=true } = {}){
+  const s = bucket;
+  const now = Date.now();
+  const ttl = 20000;
+  if (!force && s.loaded && (now - (s.loadedAt||0) < ttl)) {
+    updateProdottiHomeBlink();
+    return s.items || [];
+  }
+  const res = await api(action, { method:"GET", params:{}, showLoader });
+  const rows = Array.isArray(res) ? res : (res && Array.isArray(res.rows) ? res.rows : (res && Array.isArray(res.data) ? res.data : []));
+  s.items = (rows || []).filter(r => !__normBool01(r.isDeleted));
+  s.loaded = true;
+  s.loadedAt = now;
+  updateProdottiHomeBlink();
+  return s.items;
+}
+
+function updateProdottiControls_(){
+  const tabC = document.getElementById("prodTabColazione");
+  const tabP = document.getElementById("prodTabPulizia");
+  const sF = document.getElementById("prodSortFreq");
+  const sA = document.getElementById("prodSortAlpha");
+  const key = __prodListKey_();
+  const sort = (state.prodottiUI && state.prodottiUI.sort) ? state.prodottiUI.sort : "frequent";
+  if (tabC) tabC.classList.toggle("is-active", key === "colazione");
+  if (tabP) tabP.classList.toggle("is-active", key === "pulizia");
+  if (sF) sF.classList.toggle("is-active", sort !== "alpha");
+  if (sA) sA.classList.toggle("is-active", sort === "alpha");
+}
+
+function renderProdotti(){
+  const wrap = document.getElementById("prodottiList");
+  if (!wrap) return;
+
+  const key = __prodListKey_();
+  const action = __prodAction_();
+  const bucket = __prodStateBucket_();
+  const items = (bucket.items || []).filter(r => !__normBool01(r.isDeleted));
+
+  let arr = items.slice();
+  const sort = (state.prodottiUI && state.prodottiUI.sort) ? state.prodottiUI.sort : "frequent";
+  if (sort === "alpha") {
+    arr.sort((a,b)=> __prodNameKey_(a).localeCompare(__prodNameKey_(b), "it", { sensitivity:"base" }));
+  } else {
+    arr.sort((a,b)=>{
+      const fa = getFreq_(action, String(a.id||""));
+      const fb = getFreq_(action, String(b.id||""));
+      if (fb !== fa) return fb - fa;
+      return __prodNameKey_(a).localeCompare(__prodNameKey_(b), "it", { sensitivity:"base" });
+    });
+  }
+
+  wrap.innerHTML = "";
+  const frag = document.createDocumentFragment();
+
+  arr.forEach((it) => {
+    const block = document.createElement("div");
+    block.className = "prod-item-block";
+    block.dataset.id = String(it.id || "");
+
+    const row = document.createElement("div");
+    row.className = "colazione-item";
+    row.dataset.id = String(it.id || "");
+
+    const qtyBtn = document.createElement("button");
+    qtyBtn.type = "button";
+    qtyBtn.className = "colazione-dot colazione-qtydot";
+    const draftQty = __prodDraftGetQty_(it.id);
+    const hasDraft = (draftQty !== null);
+    const qty = hasDraft ? parseInt(String(draftQty ?? 0), 10) : parseInt(String(it.qty ?? 0), 10);
+    const q = (isNaN(qty) ? 0 : Math.max(0, qty));
+    qtyBtn.textContent = q > 0 ? String(q) : "";
+
+    const saved = hasDraft ? 0 : __normBool01(it.saved);
+    qtyBtn.classList.toggle("is-saved", saved && q > 0);
+
+    const text = document.createElement("div");
+    text.className = "colazione-text";
+    text.textContent = String(it.prodotto || "").trim();
+
+    const checkBtn = document.createElement("button");
+    checkBtn.type = "button";
+    checkBtn.className = "colazione-dot colazione-checkdot";
+    checkBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></svg>';
+    checkBtn.classList.toggle("is-checked", __normBool01(it.checked) === 1);
+
+    row.appendChild(qtyBtn);
+    row.appendChild(text);
+    row.appendChild(checkBtn);
+
+    block.appendChild(row);
+    frag.appendChild(block);
+  });
+
+  wrap.appendChild(frag);
+  updateProdottiControls_();
+}
+
+function setupProdotti(){
+  const btnAdd = document.getElementById("prodAddBtn");
+  const btnReset = document.getElementById("prodResetBtn");
+  const btnSave = document.getElementById("prodSaveBtn");
+  const btnHome = document.getElementById("prodHomeBtn");
+  const list = document.getElementById("prodottiList");
+
+  const tabC = document.getElementById("prodTabColazione");
+  const tabP = document.getElementById("prodTabPulizia");
+  const sF = document.getElementById("prodSortFreq");
+  const sA = document.getElementById("prodSortAlpha");
+
+  const modal = document.getElementById("prodAddModal");
+  const close = document.getElementById("prodAddClose");
+  const input = document.getElementById("prodAddInput");
+  const toC = document.getElementById("prodAddToColazione");
+  const toP = document.getElementById("prodAddToPulizia");
+
+  const openModal = () => {
+    if (!modal) return;
+    modal.hidden = false;
+    try{ modal.setAttribute("aria-hidden", "false"); }catch(_){ }
+    try{ input && input.focus(); }catch(_){ }
+  };
+  const closeModal = () => {
+    if (!modal) return;
+    modal.hidden = true;
+    try{ modal.setAttribute("aria-hidden", "true"); }catch(_){ }
+  };
+
+  if (btnAdd) bindFastTap(btnAdd, openModal);
+  if (close) bindFastTap(close, closeModal);
+  if (modal) {
+    modal.addEventListener("click", (e)=>{ if (e.target === modal) closeModal(); });
+  }
+
+  const createItem = async (action) => {
+    const raw = String(input?.value || "");
+    const v = raw.trim();
+    if (!v) return;
+    const prodotto = v.toUpperCase();
+    if (input) input.value = "";
+    closeModal();
+    try{
+      await api(action, { method:"POST", body:{ op:"create", prodotto }, showLoader:true });
+      // aggiorna bucket relativo
+      if (action === "colazione") await loadProdottiList_("colazione", state.colazione, { force:true, showLoader:false });
+      if (action === "prodotti_pulizia") await loadProdottiList_("prodotti_pulizia", state.prodotti_pulizia, { force:true, showLoader:false });
+      renderProdotti();
+      updateProdottiHomeBlink();
+    }catch(e){ toast(e.message); }
+  };
+
+  if (toC) bindFastTap(toC, () => createItem("colazione"));
+  if (toP) bindFastTap(toP, () => createItem("prodotti_pulizia"));
+
+  if (input) {
+    input.addEventListener("keydown", (e)=>{ if (e.key === "Enter") { e.preventDefault(); createItem(__prodAction_()); } });
+  }
+
+  if (btnHome) bindFastTap(btnHome, () => { closeModal(); showPage("home"); });
+
+  if (tabC) bindFastTap(tabC, async () => {
+    state.prodottiUI = state.prodottiUI || { list:"colazione", sort:"frequent" };
+    state.prodottiUI.list = "colazione";
+    await loadProdottiList_("colazione", state.colazione, { force:false, showLoader:true });
+    renderProdotti();
+  });
+  if (tabP) bindFastTap(tabP, async () => {
+    state.prodottiUI = state.prodottiUI || { list:"colazione", sort:"frequent" };
+    state.prodottiUI.list = "pulizia";
+    await loadProdottiList_("prodotti_pulizia", state.prodotti_pulizia, { force:false, showLoader:true });
+    renderProdotti();
+  });
+  const scrollTopList = () => { try{ const w = document.getElementById("prodottiList"); if (w) w.scrollTop = 0; }catch(_){ } };
+  if (sF) bindFastTap(sF, () => { state.prodottiUI = state.prodottiUI || {}; state.prodottiUI.sort = "frequent"; scrollTopList(); renderProdotti(); });
+  if (sA) bindFastTap(sA, () => { state.prodottiUI = state.prodottiUI || {}; state.prodottiUI.sort = "alpha"; scrollTopList(); renderProdotti(); });
+
+
+
+
+
+  if (btnReset) bindFastTap(btnReset, async () => {
+    const action = __prodAction_();
+    try{
+      // UI immediata: azzera anche le spunte verdi
+      __prodDraftClear_();
+
+      const bucket = __prodStateBucket_();
+      const items = (bucket.items || []);
+      const checkedIds = [];
+
+      items.forEach((it) => {
+        if (__normBool01(it?.isDeleted)) return;
+        const id = String(it?.id || "").trim();
+        if (id && __normBool01(it?.checked) === 1) checkedIds.push(id);
+        it.qty = 0;
+        it.saved = 0;
+        it.checked = 0;
+        it.updatedAt = new Date().toISOString();
+      });
+
+      renderProdotti();
+      updateProdottiHomeBlink();
+
+      // Backend sync (non bloccare UI)
+      api(action, { method:"POST", body:{ op:"resetQty" }, showLoader:false })
+        .catch((e)=>{ try{ toast(e.message || "Errore"); }catch(_){ } });
+
+      if (checkedIds.length){
+        Promise.all(checkedIds.map((id) => (
+          api(action, { method:"PUT", body:{ id:String(id), checked:0 }, showLoader:false })
+        )))
+          .catch((e)=>{ try{ toast(e.message || "Errore"); }catch(_){ } });
+      }
+    }catch(e){ toast(e.message); }
+  });
+
+
+
+
+
+
+
+  if (btnSave) bindFastTap(btnSave, async () => {
+    const action = __prodAction_();
+    try{
+      const draft = __prodDraftBucket_();
+      const dirty = __prodDraftDirtyBucket_();
+      const ids = Object.keys(dirty || {});
+
+      const qtyById = {};
+      for (const id of ids){
+        const qn = parseInt(String(draft[id] ?? 0), 10);
+        const qty = isNaN(qn) ? 0 : Math.max(0, qn);
+        qtyById[id] = qty;
+
+        const it = findItem(id);
+        if (it){
+          it.qty = qty;
+          it.saved = 0;
+          it.updatedAt = new Date().toISOString();
+        }
+      }
+
+      // UI immediata: alla pressione di SALVA, i pallini rossi e i LED in Home devono aggiornarsi subito
+      (__prodStateBucket_().items || []).forEach((it)=>{
+        if (__normBool01(it?.isDeleted)) return;
+        const n = parseInt(String(it?.qty ?? 0), 10);
+        const q = isNaN(n) ? 0 : Math.max(0, n);
+        it.saved = q > 0 ? 1 : 0;
+        it.updatedAt = new Date().toISOString();
+      });
+
+      __prodDraftClear_();
+      renderProdotti();
+      updateProdottiHomeBlink();
+
+      // Backend sync in background (non blocca UI)
+      const sync = async () => {
+        if (ids.length){
+          await Promise.all(ids.map((id) => (
+            api(action, { method:"PUT", body:{ id:String(id), qty: qtyById[id], saved: 0 }, showLoader:false })
+          )));
+        }
+        await api(action, { method:"POST", body:{ op:"save" }, showLoader:false });
+      };
+
+      sync().catch((e)=>{ try{ toast(e.message || "Errore"); }catch(_){ } });
+    }catch(e){ toast(e.message); }
+  });
+
+
+
+  if (!list) return;
+
+  const findItem = (id) => {
+    const sid = String(id || "");
+    return (__prodStateBucket_().items || []).find(x => String(x.id||"") === sid);
+  };
+
+  const persistPatch = async (id, patch, {showLoader=false} = {}) => {
+    const action = __prodAction_();
+    const it = findItem(id);
+    if (it) Object.assign(it, patch, { updatedAt: new Date().toISOString() });
+    renderProdotti();
+    updateProdottiHomeBlink();
+    try{
+      await api(action, { method:"PUT", body: Object.assign({ id: String(id) }, patch), showLoader });
+    }catch(e){
+      toast(e.message);
+    }
+  };
+
+  // Qty dot: tap increment, long-press (0.5s) reset qty only
+  let qtyTimer = null;
+  let qtyTargetId = null;
+  let qtyLongFired = false;
+  let lastQtyTouch = 0;
+
+  const clearQtyPress = () => {
+    if (qtyTimer){ clearTimeout(qtyTimer); qtyTimer = null; }
+    qtyTargetId = null;
+    qtyLongFired = false;
+  };
+
+  const startQtyPress = (id) => {
+    clearQtyPress();
+    qtyTargetId = id;
+    qtyTimer = setTimeout(() => {
+      qtyLongFired = true;
+      __prodDraftSetQty_(id, 0);
+      renderProdotti();
+      updateProdottiHomeBlink();
+
+      // Flash rosso neon SOLO sul riquadro del prodotto azzerato (0.5s)
+      try{
+        const sid = String(id || "");
+        const esc = sid.replace(/\\/g, "\\\\").replace(/\"/g, "\\\"");
+        const sel = `.prod-item-block[data-id="${esc}"]`;
+        const el = document.querySelector(sel);
+        if (el){
+          el.classList.add("prod-flash-red");
+          setTimeout(() => {
+            try{ el.classList.remove("prod-flash-red"); }catch(_){ }
+          }, 500);
+        }
+      }catch(_){ }
+    }, 500);
+  };
+
+  const tapQty = (id) => {
+    const it = findItem(id);
+    const base = __prodDraftGetQty_(id);
+    const cur = (base !== null && base !== undefined) ? parseInt(String(base ?? 0), 10) : parseInt(String(it?.qty ?? 0), 10);
+    const c = isNaN(cur) ? 0 : Math.max(0, cur);
+    const next = c + 1;
+    incFreq_(__prodAction_(), String(id));
+    __prodDraftSetQty_(id, next);
+    renderProdotti();
+    updateProdottiHomeBlink();
+  };
+
+  // Delete: long press 2s on text
+  let delTimer = null;
+  let delTargetId = null;
+  let delFired = false;
+  let lastDelTouch = 0;
+
+  const clearDelPress = () => {
+    if (delTimer){ clearTimeout(delTimer); delTimer = null; }
+    delTargetId = null;
+    delFired = false;
+  };
+
+  const startDelPress = (id) => {
+    clearDelPress();
+    delTargetId = id;
+    delTimer = setTimeout(() => {
+      delFired = true;
+      persistPatch(id, { isDeleted: 1, qty: 0, checked: 0, saved: 0 }, { showLoader:true }).catch(()=>{});
+    }, 2000);
+  };
+
+  const toggleCheck = (id) => {
+    const it = findItem(id);
+    const cur = __normBool01(it?.checked);
+    const next = cur ? 0 : 1;
+    if (next === 1) incFreq_(__prodAction_(), String(id));
+    persistPatch(id, { checked: next }, { showLoader:false }).catch(()=>{});
+  };
+
+  // Delegation (touch)
+  list.addEventListener("touchstart", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      lastQtyTouch = Date.now();
+      startQtyPress(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-text")) {
+      lastDelTouch = Date.now();
+      startDelPress(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, { passive:false, capture:true });
+
+  list.addEventListener("touchend", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      if (qtyTimer){ clearTimeout(qtyTimer); qtyTimer = null; }
+      if (!qtyLongFired) tapQty(id);
+      clearQtyPress();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-text")) {
+      if (delTimer){ clearTimeout(delTimer); delTimer = null; }
+      clearDelPress();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-checkdot")) {
+      toggleCheck(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, { passive:false, capture:true });
+
+  list.addEventListener("touchcancel", (e) => {
+    clearQtyPress();
+    clearDelPress();
+    try{ e.preventDefault(); e.stopPropagation(); }catch(_){ }
+  }, { passive:false, capture:true });
+
+  // Click (desktop) + anti ghost-click after touch
+  list.addEventListener("click", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      if (Date.now() - lastQtyTouch < 450) { e.preventDefault(); e.stopPropagation(); return; }
+      tapQty(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-checkdot")) {
+      if (Date.now() - lastDelTouch < 450) { e.preventDefault(); e.stopPropagation(); return; }
+      toggleCheck(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, true);
+}
+
+
+function setupColazione(){
+  const input = document.getElementById("colazioneInput");
+  const btnAdd = document.getElementById("colazioneAddBtn");
+  const btnReset = document.getElementById("colazioneResetBtn");
+  const btnSave = document.getElementById("colazioneSaveBtn");
+  const list = document.getElementById("colazioneList");
+
+  if (!input || !btnAdd || !btnReset || !btnSave || !list) return;
+
+  const findItem = (id) => {
+    const sid = String(id || "");
+    return (state.colazione.items || []).find(x => String(x.id||"") === sid);
+  };
+
+  const patchItem = async (id, patch, {showLoader=false} = {}) => {
+    const it = findItem(id);
+    if (it) Object.assign(it, patch, { updatedAt: new Date().toISOString() });
+    renderColazione();
+    updateProdottiHomeBlink();
+    await api("colazione", { method:"PUT", body: Object.assign({ id: String(id) }, patch), showLoader });
+    try{ await loadColazione({ force:true, showLoader:false }); }catch(_){ }
+    renderColazione();
+    updateProdottiHomeBlink();
+  };
+
+  const addItem = async () => {
+    const raw = String(input.value || "");
+    const v = raw.trim();
+    if (!v) return;
+    const prodotto = v.toUpperCase();
+    input.value = "";
+    try{
+      await api("colazione", { method:"POST", body:{ op:"create", prodotto }, showLoader:true });
+      await loadColazione({ force:true, showLoader:false });
+      renderColazione();
+      updateProdottiHomeBlink();
+      input.focus();
+    }catch(e){
+      toast(e.message);
+    }
+  };
+
+  bindFastTap(btnAdd, addItem);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addItem();
+    }
+  });
+
+  bindFastTap(btnReset, async () => {
+    try{
+      await api("colazione", { method:"POST", body:{ op:"resetQty" }, showLoader:true });
+      await loadColazione({ force:true, showLoader:false });
+      // reset locale qty/saved
+      (state.colazione.items || []).forEach(it => { it.qty = 0; it.saved = 0; });
+      renderColazione();
+      updateProdottiHomeBlink();
+    }catch(e){ toast(e.message); }
+  });
+
+  bindFastTap(btnSave, async () => {
+    try{
+      await api("colazione", { method:"POST", body:{ op:"save" }, showLoader:true });
+      await loadColazione({ force:true, showLoader:false });
+      renderColazione();
+      updateProdottiHomeBlink();
+    }catch(e){ toast(e.message); }
+  });
+
+  // Qty dot: tap increment, long-press (0.5s) reset qty only
+  let qtyTimer = null;
+  let qtyTargetId = null;
+  let qtyLongFired = false;
+  let lastQtyTouch = 0;
+
+  const clearQtyPress = () => {
+    if (qtyTimer){ clearTimeout(qtyTimer); qtyTimer = null; }
+    qtyTargetId = null;
+    qtyLongFired = false;
+  };
+
+  const startQtyPress = (id) => {
+    clearQtyPress();
+    qtyTargetId = id;
+    qtyTimer = setTimeout(() => {
+      qtyLongFired = true;
+      patchItem(id, { qty: 0, saved: 0 }, { showLoader:false }).catch(()=>{});
+    }, 500);
+  };
+
+  const tapQty = (id) => {
+    const it = findItem(id);
+    const cur = parseInt(String(it?.qty ?? 0), 10);
+    const next = (isNaN(cur) ? 0 : cur) + 1;
+    patchItem(id, { qty: next, saved: 0 }, { showLoader:false }).catch(()=>{});
+  };
+
+  // Delete: long press 2s on text
+  let delTimer = null;
+  let delTargetId = null;
+  let delFired = false;
+  let lastDelTouch = 0;
+
+  const clearDelPress = () => {
+    if (delTimer){ clearTimeout(delTimer); delTimer = null; }
+    delTargetId = null;
+    delFired = false;
+  };
+
+  const startDelPress = (id) => {
+    clearDelPress();
+    delTargetId = id;
+    delTimer = setTimeout(() => {
+      delFired = true;
+      patchItem(id, { isDeleted: 1, qty: 0, checked: 0, saved: 0 }, { showLoader:true }).catch(()=>{});
+    }, 2000);
+  };
+
+  const toggleCheck = (id) => {
+    const it = findItem(id);
+    const cur = __normBool01(it?.checked);
+    patchItem(id, { checked: cur ? 0 : 1 }, { showLoader:false }).catch(()=>{});
+  };
+
+  // Delegation (touch)
+  list.addEventListener("touchstart", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      lastQtyTouch = Date.now();
+      startQtyPress(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-text")) {
+      lastDelTouch = Date.now();
+      startDelPress(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, { passive:false, capture:true });
+
+  list.addEventListener("touchend", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      if (qtyTimer){ clearTimeout(qtyTimer); qtyTimer = null; }
+      if (!qtyLongFired) tapQty(id);
+      clearQtyPress();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-text")) {
+      if (delTimer){ clearTimeout(delTimer); delTimer = null; }
+      if (!delFired) {
+        // niente tap sul testo
+      }
+      clearDelPress();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-checkdot")) {
+      toggleCheck(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, { passive:false, capture:true });
+
+  list.addEventListener("touchcancel", (e) => {
+    clearQtyPress();
+    clearDelPress();
+    try{ e.preventDefault(); e.stopPropagation(); }catch(_){ }
+  }, { passive:false, capture:true });
+
+  // Click (desktop) + anti ghost-click after touch
+  list.addEventListener("click", (e) => {
+    const row = e.target.closest && e.target.closest(".colazione-item");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    if (e.target.closest && e.target.closest(".colazione-qtydot")) {
+      if (Date.now() - lastQtyTouch < 450) { e.preventDefault(); e.stopPropagation(); return; }
+      tapQty(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target.closest && e.target.closest(".colazione-checkdot")) {
+      if (Date.now() - lastDelTouch < 450) { e.preventDefault(); e.stopPropagation(); return; }
+      toggleCheck(id);
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, true);
+}
+
 function initFloatingLabels(){
   const fields = document.querySelectorAll(".field.float");
   fields.forEach((f) => {
@@ -5037,8 +6263,12 @@ async function init(){
   setupHeader();
   setupAuth();
   setupHome();
+  try{ applyRoleMode(); }catch(_){ }
   setupCalendario();
   setupImpostazioni();
+  setupProdotti();
+  // setupColazione legacy (non più usata)
+  try{ setupColazione(); }catch(_){}
 
     setupOspite();
   initFloatingLabels();
@@ -5098,6 +6328,11 @@ async function init(){
 
 
   // prefetch leggero (no await): evita blocchi e “clessidra” ripetute all'avvio
+  // Colazione: prefetch per segnale in HOME
+  if (state.session && state.session.user_id){
+    try { loadColazione({ force:false, showLoader:false }).catch(() => {}); } catch(_){ }
+  }
+
   if (state.session && state.session.user_id){
     try { loadMotivazioni().catch(() => {}); } catch(_){ }
     try { ensureSettingsLoaded({ force:false, showLoader:false }).catch(() => {}); } catch(_){ }
@@ -5293,6 +6528,30 @@ async function init(){
       r.hours.setAttribute("aria-label", "Ore " + n);
     } catch (_) {}
   });
+
+  // Sessione OPERATORE: mostra solo il proprio nome
+  try{
+    if (state && state.session && isOperatoreSession(state.session)){
+      const rawU = String(state.session.username || state.session.user || state.session.nome || state.session.name || state.session.email || "").trim();
+      const normU = rawU.toLowerCase();
+      if (normU){
+        const active = (names||[]).find(n => String(n||"").trim().toLowerCase() === normU) || rawU;
+        opEls.forEach((r, idx)=>{
+          const nm = String(names[idx] || "").trim();
+          if (!nm) return;
+          const rowEl = (r.hours && r.hours.closest) ? r.hours.closest('.clean-op-row') : null;
+          if (!rowEl) return;
+          const show = nm.toLowerCase() === String(active||"").trim().toLowerCase();
+          rowEl.style.display = show ? '' : 'none';
+          if (!show){
+            try{ writeHourDot(r.hours, 0); }catch(_){ }
+            try{ r.hours.classList.remove('is-saved'); }catch(_){ }
+          }
+        });
+      }
+    }
+  }catch(_){}
+
 };
 
   try{ syncCleanOperators(); }catch(_){}
@@ -5548,12 +6807,77 @@ if (cleanSaveLaundry){
 }
 
 // Salva ore lavoro (foglio "operatori") — REPLACE per data (sovrascrive report del giorno)
+// Nota: in sessione OPERATORE preserviamo le ore degli altri operatori con merge-safe.
 if (cleanSaveHours){
   cleanSaveHours.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
     try{
-      const { touched, payload: opPayload } = buildOperatoriPayload();
+      const isOpSession = !!(state && state.session && isOperatoreSession(state.session));
+
+      const parseRows = (res) => {
+        const rows = Array.isArray(res) ? res
+          : (res && Array.isArray(res.rows) ? res.rows
+          : (res && Array.isArray(res.data) ? res.data
+          : (res && res.data && Array.isArray(res.data.data) ? res.data.data
+          : [])));
+        return Array.isArray(rows) ? rows : [];
+      };
+
+      const buildMergedForOperatore = async () => {
+        const date = getCleanDate();
+        const names = getOperatorNamesFromSettings();
+        const hasAnyName = names.some(n => String(n || '').trim());
+        if (!hasAnyName) throw new Error("Imposta i nomi operatori in Impostazioni");
+
+        const rawU = String(state.session.username || state.session.user || state.session.nome || state.session.name || state.session.email || '').trim();
+        if (!rawU) throw new Error('Operatore non valido');
+        const normU = rawU.toLowerCase();
+        const activeName = (names||[]).find(n => String(n||'').trim().toLowerCase() === normU) || rawU;
+
+        // carica ore esistenti del giorno (per preservare gli altri)
+        let existing = [];
+        try{
+          const res = await api('operatori', { method:'GET', params:{ data: date }, showLoader:false });
+          existing = parseRows(res);
+        }catch(_){ existing = []; }
+
+        const map = new Map();
+        // helper
+        const _max = (a,b)=> (a>b?a:b);
+        existing.forEach(r=>{
+          const op = String(r?.operatore || r?.nome || '').trim().toLowerCase();
+          const ore = parseInt(String(r?.ore ?? 0), 10);
+          if (op) map.set(op, (ore!=ore)?0: _max(0, ore));
+        });
+
+        // trova index dell'operatore attivo
+        const idxActive = (names||[]).findIndex(n => String(n||'').trim().toLowerCase() === String(activeName||'').trim().toLowerCase());
+
+        const rows = [];
+        (names||[]).forEach((nm, idx)=>{
+          const name = String(nm||'').trim();
+          if (!name) return;
+
+          let hours = 0;
+          if (idx === idxActive && idxActive >= 0){
+            const el = opEls[idxActive];
+            hours = el ? readHourDot(el.hours) : 0;
+          } else {
+            hours = map.get(name.toLowerCase()) || 0;
+          }
+
+          // inviamo solo ore > 0 (il backend ignora le 0)
+          if (hours > 0){
+            rows.push({ data: date, operatore: name, ore: hours, benzina_euro: OP_BENZINA_EUR });
+          }
+        });
+
+        return { touched: true, payload: { data: date, operatori: rows, replaceDay: true } };
+      };
+
+      const out = isOpSession ? await buildMergedForOperatore() : buildOperatoriPayload();
+      const { touched, payload: opPayload } = out || {};
 
       if (!touched){
         toast("Nessun operatore configurato");
@@ -5565,7 +6889,7 @@ if (cleanSaveHours){
       const deleted = (res && typeof res.deleted === "number") ? res.deleted : null;
 
       // Ricarica dal DB per confermare UI allineata
-      try{ await loadOperatoriForDay({ clearFirst:false }); }catch(_){}
+      try{ await loadOperatoriForDay({ clearFirst:false }); }catch(_){ }
 
       const msg = (deleted != null)
         ? `Ore lavoro salvate (${saved}) — sostituiti ${deleted} record`

@@ -8,12 +8,12 @@
 <meta content="no-cache, no-store, must-revalidate" http-equiv="Cache-Control"/>
 <meta content="no-cache" http-equiv="Pragma"/>
 <meta content="0" http-equiv="Expires"/>
-<link href="./styles.css?v=dDAE_2.049" rel="stylesheet"/>
-<link href="./manifest.json?v=dDAE_2.049" rel="manifest"/>
-<link href="./assets/icons/apple-touch-icon.png?v=dDAE_2.049" rel="apple-touch-icon" sizes="180x180"/>
-<link href="./assets/icons/apple-touch-icon.png?v=dDAE_2.049" rel="apple-touch-icon-precomposed" sizes="180x180"/>
-<link href="./assets/icons/favicon-32.png?v=dDAE_2.049" rel="icon" sizes="32x32" type="image/png"/>
-<link href="./assets/icons/favicon-16.png?v=dDAE_2.049" rel="icon" sizes="16x16" type="image/png"/>
+<link href="./styles.css?v=dDAE_2.074" rel="stylesheet"/>
+<link href="./manifest.json?v=dDAE_2.074" rel="manifest"/>
+<link href="./assets/icons/apple-touch-icon.png?v=dDAE_2.074" rel="apple-touch-icon" sizes="180x180"/>
+<link href="./assets/icons/apple-touch-icon.png?v=dDAE_2.074" rel="apple-touch-icon-precomposed" sizes="180x180"/>
+<link href="./assets/icons/favicon-32.png?v=dDAE_2.074" rel="icon" sizes="32x32" type="image/png"/>
+<link href="./assets/icons/favicon-16.png?v=dDAE_2.074" rel="icon" sizes="16x16" type="image/png"/>
 <meta content="#ffffff" name="theme-color"/>
 <meta content="yes" name="apple-mobile-web-app-capable"/>
 <meta content="Daedalium PMS" name="apple-mobile-web-app-title"/>
@@ -23,7 +23,7 @@
 <header class="topbar">
 <div class="brand">
 <div class="brand-left">
-<img alt="Daedalium logo" class="logo" src="./assets/logo.jpg?v=dDAE_2.049"/>
+<img alt="Daedalium logo" class="logo" src="./assets/logo.jpg?v=dDAE_2.074"/>
 <h1>Daedalium PMS</h1>
 </div>
 <div class="brand-right">
@@ -63,6 +63,18 @@
 </button>
 </div>
 <div hidden="" id="speseTopTools"><button aria-label="Aggiungi spesa" class="icon-btn icon-btn-whiteorange" id="btnAddSpesa" type="button"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg></button><button aria-label="Grafico e riepilogo" class="icon-btn icon-btn-whiteblue" id="btnSpeseInsights" type="button"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 17v-6"></path><path d="M12 17V7"></path><path d="M16 17v-3"></path></svg></button></div>
+
+<div hidden="" id="prodottiTopTools">
+  <button aria-label="Inserisci prodotto" class="icon-btn icon-btn-whiteorange" id="prodAddBtn" type="button">
+    <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+  </button>
+  <button aria-label="Azzera quantita prodotti" class="icon-btn icon-btn-whitered" id="prodResetBtn" type="button">
+    <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v6h6"></path></svg>
+  </button>
+  <button aria-label="Salva lista prodotti" class="icon-btn icon-btn-whitegreen" id="prodSaveBtn" type="button">
+    <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></svg>
+  </button>
+</div>
 <div hidden="" id="statGenTopTools">
 <button aria-label="Torna a Statistiche" class="icon-btn icon-btn-whiteorange" id="btnBackStatistiche" type="button">
 <svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24">
@@ -116,7 +128,14 @@
 </svg>
 </button>
 </div>
-<button aria-label="Home" class="icon-btn-whiteblack icon-btn" id="hamburgerBtn"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"></path><path d="M5 10v11h14V10"></path><path d="M9 21v-6h6v6"></path></svg></button>
+<!-- HOME: Impostazioni (solo in HOME) -->
+<div class="top-leds" hidden="" id="prodTopLeds" aria-label="Indicatori prodotti">
+  <span class="top-led top-led-blue" id="prodLedColazione" aria-label="Colazione"></span>
+  <span class="top-led top-led-orange" id="prodLedPulizia" aria-label="Pulizia"></span>
+</div>
+<button aria-label="Impostazioni" class="icon-btn icon-btn-whiteorange" hidden="" id="homeSettingsTop" type="button"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"></path><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M4.93 4.93l1.41 1.41"></path><path d="M17.66 17.66l1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.93 19.07l1.41-1.41"></path><path d="M17.66 6.34l1.41-1.41"></path></svg></button>
+<button aria-label="Home" class="icon-btn icon-btn-whiteorange" id="hamburgerBtn"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5"></path><path d="M5 10v11h14V10"></path><path d="M9 21v-6h6v6"></path></svg></button>
+<button aria-label="Logout" class="icon-btn icon-btn-whiteorange" hidden="" id="opLogoutTop" type="button"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24"><path d="M10 17l1 1a2 2 0 0 0 2 0l1-1"></path><path d="M12 3v10"></path><path d="M7 8a6 6 0 1 0 10 0"></path></svg></button>
 </div>
 </div>
 </header>
@@ -126,7 +145,7 @@
 <div class="auth-page">
 <div class="auth-card">
 <div class="auth-logo-wrap">
-<img alt="Daedalium" class="auth-logo" src="./assets/logo.jpg?v=dDAE_2.049"/>
+<img alt="Daedalium" class="auth-logo" src="./assets/logo.jpg?v=dDAE_2.074"/>
 </div>
 <div class="field float">
 <input autocomplete="username" id="authUsername" placeholder=" "/>
@@ -246,24 +265,52 @@
 </svg></div>
 <div class="home-main-label">Statistiche</div>
 </button>
-<button aria-label="Impostazioni" class="home-main" id="goImpostazioni" type="button">
-<div aria-hidden="true" class="home-main-glyph alt"><svg aria-hidden="true" class="ui-ico" viewbox="0 0 24 24">
-<path d="M12 14.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"></path>
-<path d="M12 2v2"></path>
-<path d="M12 20v2"></path>
-<path d="M4.93 4.93l1.41 1.41"></path>
-<path d="M17.66 17.66l1.41 1.41"></path>
-<path d="M2 12h2"></path>
-<path d="M20 12h2"></path>
-<path d="M4.93 19.07l1.41-1.41"></path>
-<path d="M17.66 6.34l1.41-1.41"></path>
-</svg></div>
-<div class="home-main-label">Impostazioni</div>
-</button>
+<button aria-label="Prodotti" class="home-main" id="goProdotti" type="button"><div aria-hidden="true" class="home-main-glyph alt"><svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24">
+<path d="M9 6h12"></path>
+<path d="M9 12h12"></path>
+<path d="M9 18h12"></path>
+<path d="M4 6h.01"></path>
+<path d="M4 12h.01"></path>
+<path d="M4 18h.01"></path>
+</svg></div><div class="home-main-label">Prodotti</div></button>
 
 
 
-</div><div class="build" id="buildText">dDAE_2.049</div></div></section>
+</div><div class="build" id="buildText">dDAE_2.074</div></div></section>
+
+
+
+<!-- PRODOTTI -->
+<section class="page" hidden id="page-prodotti">
+  <div class="prodotti-page">
+
+    <div class="prodotti-grid" aria-label="Filtri prodotti">
+      <button id="prodTabColazione" class="prod-rectbtn prod-blue" type="button">Colazione</button>
+      <button id="prodTabPulizia" class="prod-rectbtn prod-orange" type="button">Prodotti</button>
+      <button id="prodSortFreq" class="prod-rectbtn" type="button">Frequenti</button>
+      <button id="prodSortAlpha" class="prod-rectbtn" type="button">Alfabetico</button>
+    </div>
+
+    <div id="prodottiList" class="colazione-list prodotti-list" aria-label="Lista prodotti"></div>
+  </div>
+</section>
+
+<!-- MODAL: Aggiungi prodotto -->
+<div class="modal modal-center" hidden id="prodAddModal" role="dialog" aria-modal="true" aria-label="Aggiungi prodotto">
+  <div class="modal-card prod-add-card">
+    <div class="prod-add-top">
+      <div class="prod-add-title">Aggiungi prodotto</div>
+      <button id="prodAddClose" class="icon-btn icon-btn-whiteblack prod-add-close" type="button" aria-label="Chiudi">
+        <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    <input id="prodAddInput" class="prod-add-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" placeholder="Scrivi prodotto" />
+    <div class="prod-add-actions">
+      <button id="prodAddToColazione" class="prod-add-btn prod-blue" type="button">Colazione</button>
+      <button id="prodAddToPulizia" class="prod-add-btn prod-orange" type="button">Pulizia</button>
+    </div>
+  </div>
+</div>
 
 <!-- STATISTICHE -->
 <section class="page" hidden="" id="page-statistiche">
@@ -450,6 +497,9 @@
 </button>
 <button class="settings-btn settings-btn-reload" id="settingsReloadBtn" type="button" aria-label="Ricarica">
   <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+</button>
+<button class="settings-btn settings-btn-operator" id="settingsCreateOperatorBtn" type="button" aria-label="Operatore">
+  <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
 </button>
 <button class="settings-btn settings-btn-delete" id="settingsDeleteBtn" type="button" aria-label="Elimina account">
   <svg aria-hidden="true" class="ui-ico" viewBox="0 0 24 24">
@@ -1066,8 +1116,8 @@
 </div>
 </div>
 </div>
-<script defer="" src="./config.js?v=dDAE_2.049"></script>
-<script defer="" src="./app.js?v=dDAE_2.049"></script>
+<script defer="" src="./config.js?v=dDAE_2.074"></script>
+<script defer="" src="./app.js?v=dDAE_2.074"></script>
 <!-- TAX REPORT MODAL -->
 <div aria-hidden="true" class="modal" hidden="" id="taxReportModal">
 <div aria-labelledby="taxReportTitle" aria-modal="true" class="modal-card tax-report-card" role="dialog">
@@ -1091,6 +1141,44 @@
 <button class="btn primary" id="rc_save" type="button">Conferma</button>
 </div>
 </div>
+
+</div>
+
+<!-- OPERATORE MODAL (crea / modifica) -->
+<div aria-hidden="true" class="modal" hidden="" id="operatorModal">
+  <div aria-modal="true" class="modal-card operator-card" role="dialog">
+    <div class="operator-hd">
+      <div class="operator-title" id="operatorModalTitle">Operatore</div>
+      <button aria-label="Chiudi" class="btn ghost operator-close" id="operatorModalClose" type="button">✕</button>
+    </div>
+
+    <div class="operator-menu" id="operatorModalMenu">
+      <button class="btn primary operator-primary" id="operatorCreateBtn" type="button">Crea operatore</button>
+      <button class="btn ghost operator-ghost" id="operatorEditBtn" type="button">Modifica operatore</button>
+      <button class="btn ghost operator-ghost" id="operatorDeleteBtn" type="button">Elimina operatore</button>
+    </div>
+
+    <div class="operator-form" hidden="" id="operatorModalForm">
+      <div class="operator-msg" id="operatorModalMsg" aria-live="polite" role="status"></div>
+      <div class="field float" style="margin-top:10px;">
+        <input autocomplete="off" id="opFormUsername" placeholder=" "/>
+        <label for="opFormUsername">Username operatore</label>
+      </div>
+      <div class="field float" style="margin-top:10px;">
+        <input id="opFormPassword" placeholder=" " type="password"/>
+        <label for="opFormPassword" id="opFormPasswordLabel">Password operatore</label>
+      </div>
+      <div class="field float" style="margin-top:10px;">
+        <input id="opFormOwnerPassword" placeholder=" " type="password"/>
+        <label for="opFormOwnerPassword">Password owner</label>
+      </div>
+
+      <div class="row" style="justify-content:flex-end; gap:10px; margin-top:12px;">
+        <button class="btn ghost" id="opFormBack" type="button">Indietro</button>
+        <button class="btn primary" id="opFormConfirm" type="button">Conferma</button>
+      </div>
+    </div>
+  </div>
 </div>
 <!-- PULIZIE: HEADER INFO MODAL -->
 <div aria-label="Descrizione biancheria" aria-modal="true" class="modal modal-center" hidden="" id="cleanHeaderModal" role="dialog">

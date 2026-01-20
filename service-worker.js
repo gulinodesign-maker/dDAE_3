@@ -1,5 +1,5 @@
 /* dDAE - Service Worker (PWA)
- * Build: dDAE_2.049
+ * Build: dDAE_2.074
  *
  * Obiettivi:
  * - cache name cambia ad ogni build
@@ -9,7 +9,7 @@
  * - fix iOS/Safari cache aggressiva (cache:"reload"/"no-store" + query ?v)
  */
 
-const BUILD = "dDAE_2.049";
+const BUILD = "dDAE_2.074";
 const CACHE_NAME = `dDAE-cache-${BUILD}`; // cambia ad ogni build // cambia ad ogni build
 
 // Asset principali (versionati per forzare il fetch anche con cache aggressiva iOS)
@@ -24,6 +24,7 @@ const CORE_ASSETS = [
 
   // Immagini / icone (alcune linkate con ?v=... da index.html)
   `./assets/logo.jpg?v=${BUILD}`,
+  `./assets/bg-daedalium.png?v=${BUILD}`,
   `./assets/bg-daedalium.jpeg?v=${BUILD}`,
   "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png",
@@ -184,7 +185,7 @@ self.addEventListener("fetch", (event) => {
 
   // Non cache API
   if (isApiRequest(url)) {
-    event.respondWith(fetch(new Request(req, { cache: "no-store" })));
+    event.respondWith(fetch(req, { cache: "no-store" }));
     return;
   }
 
